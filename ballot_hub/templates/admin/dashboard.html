@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin Dashboard - BallotHub</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    const token = localStorage.getItem('admin_token');
+    
+    async function loadUsers() {
+      if (!token) return;
+      try {
+        const res = await fetch('/api/admin/users', { headers: { Authorization: 'Bearer ' + token }});
+        const data = await res.json();
+        const users = data.users || [];
+        const pendingUsers = users.filter(u => u.status === 'pending');
+        const approvedUsers = users.filter(u => u.status === 'approved');
+        
+        const usersEl = document.getElementById('pendingUsers');
+        if (pendingUsers.length === 0) {
+          usersEl.innerHTML = '<div class="alert alert-info">No pending users</div>';
+        } else {
+          usersEl.innerHTML = pendingUsers.map((u, index) => `
+            <div class="card mb-3 fade-in" style="animation-delay: ${index * 0.1}s;">
+              <div class="card-body">
+                <div class="row align-items-center">
+                  <div class="col-md-8">
+                    <h6 class="mb-2" style="font-weight: 600; color: #1e293b;">${u.name}</h6>
+                    <small class="text-muted d-block mb-1">📧 Email: ${u.email}</small>
+                  </div>
+                  <div class="col-md-4 text-end">
+                    <div class="btn-group btn-group-sm" role="group">
+                      <button class="btn btn-success" onclick="approveUser('${u.user_id}')" style="font-weight: 500;">
+                        ✓ Approve
+                      </button>
+                      <button class="btn btn-warning" onclick="rejectUser('${u.user_id}')" style="font-weight: 500;">
+                        ✗ Reject
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          `).join('');
+        }
+        
+        // Show approved users count
+        document.getElementById('approvedCount').textContent = approvedUsers.length;
+        document.getElementById('pendingCount').textContent = pendingUsers.length;
+      } catch (e) {
+        console.error('Failed to load users:', e);
+      }
+    }
+    
+    async function approveUser(userId) {
+      if (!token) return;
+      if (!confirm('Approve this user?')) return;
+      
+      try {
+        const res = await fetch(`/api/admin/approve_user/${userId}`, {
+          method: 'PUT',
+          headers: { Authorization: 'Bearer ' + token }
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert('User approved successfully!');
+          loadUsers();
+        } else {
+          alert('Error: ' + (data.error || 'Failed to approve user'));
+        }
+      } catch (e) {
+        alert('Error approving user: ' + e.message);
+      }
+    }
+    
+    async function rejectUser(userId) {
+      if (!token) return;
+      if (!confirm('Reject this user? This will permanently delete their account.')) return;
+      
+      try {
+        const res = await fetch(`/api/admin/reject_user/${userId}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer ' + token }
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert('User rejected successfully!');
+          loadUsers();
+        } else {
+          alert('Error: ' + (data.error || 'Failed to reject user'));
+        }
+      } catch (e) {
+        alert('Error rejecting user: ' + e.message);
+      }
+    }
+    
+    async function loadResults() {
+      if (!token) { window.location.href = '/admin'; return; }
+      
+      // Check if election_id is provided in URL parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const electionId = urlParams.get('election_id');
+      
+      let election = null;
+      const statusEl = document.getElementById('status');
+      
+      if (electionId) {
+        // Get specific election by ID
+        const allElectionsRes = await fetch('/api/admin/elections', { headers: { Authorization: 'Bearer ' + token }});
+        const allElectionsData = await allElectionsRes.json();
+        election = (allElectionsData.elections || []).find(e => e.election_id === electionId);
+        
+        if (!election) {
+          statusEl.innerHTML = '<div class="alert alert-warning">Election not found</div>';
+          return;
+        }
+      } else {
+        // Fetch first active election
+        const userToken = localStorage.getItem('token'); // if present
+        const eRes = await fetch('/api/elections', { headers: { Authorization: 'Bearer ' + (userToken || token) }});
+        const eData = await eRes.json();
+        const elections = eData.elections || [];
+        election = elections[0]; // Get first active election
+      }
+      
+      if (!election) {
+        statusEl.innerHTML = '<div class="alert alert-info">No active election</div>';
+        return;
+      }
+      
+      statusEl.innerHTML = `<div class="alert alert-success">Showing results for: <strong>${election.election_name}</strong></div>`;
+
+      const rRes = await fetch('/api/admin/results/' + election.election_id, { headers: { Authorization: 'Bearer ' + token }});
+      const rData = await rRes.json();
+      const labels = (rData.results || []).map(r => r.candidate_name);
+      const counts = (rData.results || []).map(r => r.total_votes);
+      const ctx = document.getElementById('resultsChart');
+      if (ctx) {
+        // Destroy existing chart if it exists
+        if (window.resultsChartInstance) {
+          window.resultsChartInstance.destroy();
+        }
+        window.resultsChartInstance = new Chart(ctx, {
+          type: 'bar',
+          data: { labels, datasets: [{ label: 'Votes', data: counts, backgroundColor: '#0d6efd' }] },
+          options: { responsive: true, scales: { y: { beginAtZero: true } } }
+        });
+      }
+    }
+    
+    window.addEventListener('DOMContentLoaded', () => {
+      loadUsers();
+      loadResults();
+    });
+    
+    // Force refresh on page load to prevent caching issues
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) {
+        // Page was loaded from cache, force refresh
+        loadUsers();
+        loadResults();
+      }
+    });
+  </script>
+</head>
+<body>
+  <nav class="navbar navbar-light mb-4">
+    <div class="container">
+      <a class="navbar-brand fw-bold" href="/admin/dashboard" style="font-size: 1.5rem;">🎯 BallotHub Admin</a>
+      <div>
+        <a href="/admin" class="btn btn-outline-secondary btn-sm" onclick="localStorage.removeItem('admin_token')">Logout</a>
+      </div>
+    </div>
+  </nav>
+  <div class="container py-4 dashboard-container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h2 class="gradient-text" style="font-weight: 700; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">Admin Dashboard</h2>
+    </div>
+    
+    <div id="status" class="mb-3"></div>
+    
+    <!-- User Approval Section -->
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">User Approvals</h5>
+        <div>
+          <span class="badge bg-success me-2">Approved: <span id="approvedCount">0</span></span>
+          <span class="badge bg-warning">Pending: <span id="pendingCount">0</span></span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="pendingUsers">Loading...</div>
+      </div>
+    </div>
+    
+    <!-- Election Results Section -->
+    <div class="row">
+      <div class="col-md-8">
+        <div class="card">
+          <div class="card-header">
+            <h5 class="mb-0">Election Results</h5>
+          </div>
+          <div class="card-body">
+            <canvas id="resultsChart" height="120"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card">
+          <div class="card-header">
+            <h5 class="mb-0">Actions</h5>
+          </div>
+          <div class="card-body">
+            <a href="/admin/add_candidate" class="btn btn-outline-primary w-100 mb-2">Add Candidate</a>
+            <a href="/admin/create_election" class="btn btn-outline-secondary w-100 mb-2">Create Election</a>
+            <a href="/admin/manage_elections" class="btn btn-outline-success w-100 mb-2">Manage Elections</a>
+            <a href="/admin/manage_users" class="btn btn-outline-warning w-100 mb-2">Manage Users</a>
+            <button onclick="loadUsers(); loadResults();" class="btn btn-outline-info w-100">Refresh</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="/static/js/interactive.js"></script>
+</body>
+</html>
+
